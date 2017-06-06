@@ -1,0 +1,245 @@
+#!/usr/bin/python
+
+import os
+import sys
+import re
+import subprocess
+from tabulate import tabulate
+
+HELP = """
+
+    ledstat - utility to change hard drives led status
+
+    Usage:
+
+    ledstat (without options) - display all slots devices status and disk letter
+    ledstat --locate=[on|off] enclosure/index - enable/disable indicator for requested device
+    ledstat --locate=[on|off] all - enable/disable indicator all devices for all enclosures
+    ledstat --locate=[on|off] detected - enable/disable indicator only for detected devices
+    ledstat --locate=[on|off] undetected - enable/disable indicator for undetected devices
+
+    examples:
+        ledstat - display current status
+        ledstat --locate=on sg24/12 - enable indicator
+        ledstat --locate=off sg24/12 - disable indicator
+        ledstat --locate=on all - enable indicator for all devices in all enclosures
+        ledstat --locate=on detected
+        ledstat --locate=off undetected
+"""
+
+def prRed(prt): return "\033[101m{}\033[00m" .format(prt)
+def prBlue(prt): return "\033[44m{}\033[00m" .format(prt)
+def prGreen(prt): return "\033[92m{}\033[00m" .format(prt)
+def prBlink(prt): return "\033[5m{}\033[00m" .format(prt)
+
+
+def shell_command(command):
+    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE)
+    output = process.communicate()
+    return output[0]
+
+
+def shell_command_lines(command):
+    output = shell_command(command)
+    return output.splitlines()
+
+
+def merge_dict(d1,d2):
+    from collections import defaultdict
+    dd = defaultdict(dict)
+    for d in (d1, d2):
+	for key, value in d.iteritems():
+	    for key2,value2 in value.iteritems():
+		dd[key][key2] = value2
+    return dd
+
+
+def get_enclosures():
+    lines = shell_command_lines("lsscsi -tg | grep enclosu | sed -E 's/sas:|\[|\]//g'")
+    enclosures=[]
+    for line in lines:
+	a,b,c,d,e = line.split()
+	generic_name = e.split('/')[-1]
+	enclosure = {
+	    'sys_id': a,
+	    'sas_addr': c,
+	    'generic_name': generic_name,
+	    'elements' : {}
+	}
+	elements_status = get_elements_status(generic_name)
+	elements_info = get_elements_sas_info(generic_name)
+	elements = merge_dict(elements_status, elements_info)
+	
+	drives = get_drives()
+	
+	enclosure['elements'] = elements
+	enclosures.append(enclosure)
+    return enclosures
+
+
+def get_drives():
+    lines = shell_command_lines("lsscsi -tgs | grep disk | sed -E 's/sas:|\[|\]//g'")
+    drives={}
+    for line in lines:
+	a,b,c,d,e,f = line.split()
+	drive_name = d.split('/')[-1]
+	drives[c] = {
+	    'sys_id': a,
+	    'sys_name': drive_name,
+	    'size' : f
+	}
+    return drives
+
+
+def get_elements_status(enclosure):
+    regex = r"Element (\d+) descriptor:(\n.*){5}Ident=(\d).*(\n.*){1}Fault reqstd=(\d)"
+    command = "sg_ses -p es /dev/%s" % enclosure
+    output = shell_command(command)
+    matches = re.finditer(regex, output, re.MULTILINE)
+    status = {}
+    for match in matches:
+	element = int(match.group(1))
+	ident = int(match.group(3))
+	fault = int(match.group(5))
+	status[element] = {
+	    'ident': ident,
+	    'fault': fault
+	}
+    return status
+
+
+def get_elements_sas_info(enclosure):
+    regex = r"Element index: (\d+)(.*\n){2}.*slot number: (\d+)(.*\n){6}.*(0x.*)"
+    command = "sg_ses -p aes /dev/%s" % enclosure
+    output = shell_command(command)
+    matches = re.finditer(regex, output, re.MULTILINE)
+    result = {}
+    drives = get_drives()
+    for match in matches:
+	element = int(match.group(1))
+	slot = int(match.group(3))
+	sas_addr = match.group(5)
+	info = {
+	    'slot': slot,
+	    'sas_addr': sas_addr,
+	    'sys_id': None,
+	    'sys_name': None,
+	    'size': None,
+	}
+	if sas_addr in drives:
+	    drive = drives[sas_addr]
+	    info['sys_id'] = drive['sys_id']
+	    info['sys_name'] = drive['sys_name']
+	    info['size'] = drive['size']
+	result[element] = info
+    return result
+
+
+def perform_sas_action(action, value, sas_index,  enclosure):
+    command = "sg_ses --%s=%s --index=%s /dev/%s" % (action, value, sas_index, enclosure)
+    return shell_command_lines(command)
+
+
+def update_all(action, value, target):
+    for enclosure in get_enclosures():
+	generic_name = enclosure['generic_name']
+	for idx,element in sorted(enclosure['elements'].iteritems()):
+	    drive_name = element['sys_name']
+	    if target == 'all' or (target == 'detected' and drive_name != None) or (target == 'undetected' and drive_name == None):
+		perform_sas_action(action, value, idx, generic_name)
+
+
+def print_status(format=''):
+    data=[]
+    for enclosure in get_enclosures():
+	row = []
+	enclosure_generic_name = enclosure['generic_name']
+	row.append(enclosure_generic_name)
+	for idx,element in sorted(enclosure['elements'].iteritems()):
+	    drive_name = element['sys_name']
+	    drive_size = element['size']
+	    element_ident = element['ident']
+	    element_fault = element['fault']
+	    cell = {}
+	    if drive_name is not None:
+		cell = drive_name
+	    else:
+		cell = '-'
+	    if element_ident == 1 or element_fault == 1:
+		row.append(prBlink(prRed(cell)))
+	    else:
+		if cell != '-':
+		    row.append(prGreen(cell))
+		else:
+		    row.append(cell)
+	data.append(row)
+
+    if len(data) > 0:
+	ind = [' '] + list(range(0,len(data[0]) - 1))
+	data.insert(0,ind)
+	print_table(data)
+    else:
+	print "Enclosures not found"
+
+
+def print_table(data):
+    table = tabulate(data,tablefmt="fancy_grid",stralign="center",numalign="center")
+    print(table)
+
+
+def main(argv):
+    if len(argv) > 1 and argv[1] in ('--help', '-h', '-help', '/?', '?', 'help', '-v', '--version', '-V'):
+        print (HELP)
+        return(0)
+    
+    if len(argv) == 1:
+	print_status()
+	return(0)
+    
+    if argv[1] == '--locate=on':
+	if '/' in argv[2]:
+	    (enclosure,sas_index) = argv[2].split('/')
+	    perform_sas_action('set','locate', sas_index, enclosure)
+	    print_status()
+	    return(0)
+	if argv[2] == 'all':
+	    update_all('set','locate','all')
+	    print_status()
+	    return(0)
+	if argv[2] == 'detected':
+	    update_all('set','locate', 'detected')
+	    print_status()
+	    return(0)
+	if argv[2] == 'undetected':
+	    update_all('set','locate', 'undetected')
+	    print_status()
+	    return(0)
+
+
+    if argv[1] == '--locate=off':
+	if '/' in argv[2]:
+	    (enclosure,sas_index) = argv[2].split('/')
+	    perform_sas_action('clear','locate', sas_index, enclosure)
+	    perform_sas_action('clear','fault', sas_index, enclosure)
+	    print_status()
+	    return(0)
+	if argv[2] == 'all':
+	    update_all('clear','locate','all')
+	    print_status()
+	    return(0)
+	if argv[2] == 'detected':
+	    update_all('clear','locate', 'detected')
+	    print_status()
+	    return(0)
+	if argv[2] == 'undetected':
+	    update_all('clear','locate', 'undetected')
+	    print_status()
+	    return(0)
+    else:
+        print ("ledstat: Incorrect syntax")
+        print (HELP)
+        return(-1)
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))
