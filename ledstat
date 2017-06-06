@@ -8,7 +8,7 @@ from tabulate import tabulate
 
 HELP = """
 
-    ledstat - utility to change hard drives led status
+ledstat - utility to change hard drives led status in enclosures
 
     Usage:
 
@@ -18,13 +18,15 @@ HELP = """
     ledstat --locate=[on|off] detected - enable/disable indicator only for detected devices
     ledstat --locate=[on|off] undetected - enable/disable indicator for undetected devices
 
-    examples:
-        ledstat - display current status
-        ledstat --locate=on sg24/12 - enable indicator
-        ledstat --locate=off sg24/12 - disable indicator
-        ledstat --locate=on all - enable indicator for all devices in all enclosures
-        ledstat --locate=on detected
-        ledstat --locate=off undetected
+    Examples:
+        
+    ledstat - display current status
+    ledstat --locate=on sg24/12 - enable indicator
+    ledstat --locate=off sg24/12 - disable indicator
+    ledstat --locate=on all - enable indicator for all devices in all enclosures
+    ledstat --locate=on detected
+    ledstat --locate=off undetected
+    
 """
 
 def prRed(prt): return "\033[101m{}\033[00m" .format(prt)

@@ -1,4 +1,4 @@
-ledstat - utility to change hard drives led status
+ledstat - utility to change hard drives led status in enclosures
 
 Usage:
 
@@ -9,6 +9,7 @@ Usage:
     ledstat --locate=[on|off] undetected - enable/disable indicator for undetected devices
 
 Examples:
+
     ledstat - display current status
     ledstat --locate=on sg24/12 - enable indicator
     ledstat --locate=off sg24/12 - disable indicator
